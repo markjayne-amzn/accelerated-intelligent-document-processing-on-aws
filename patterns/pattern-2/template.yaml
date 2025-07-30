@@ -851,7 +851,7 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 900
-      MemorySize: 4096
+      MemorySize: 8192
       Environment:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
@@ -932,7 +932,7 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 900
-      MemorySize: 4096
+      MemorySize: 8192
       Environment:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
@@ -1023,7 +1023,7 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 900
-      MemorySize: 512
+      MemorySize: 1024
       Environment:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
@@ -1109,7 +1109,7 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 900
-      MemorySize: 512
+      MemorySize: 1024
       Environment:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
@@ -1190,7 +1190,7 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 900
-      MemorySize: 4096
+      MemorySize: 8192
       Environment:
         Variables:
           METRIC_NAMESPACE: !Ref StackName
@@ -1254,7 +1254,7 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 900
-      MemorySize: 4096
+      MemorySize: 8192
       Environment:
         Variables:
           METRIC_NAMESPACE: !Ref StackName

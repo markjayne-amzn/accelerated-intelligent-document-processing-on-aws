@@ -129,6 +129,14 @@ class ClassificationService:
             "classificationMethod", self.MULTIMODAL_PAGE_LEVEL
         )
 
+        # Get grouping behavior from config (defaults to True for backward compatibility)
+        # Handle both boolean and string values due to UI serialization issues
+        group_pages = classification_config.get("groupConsecutivePages", True)
+        if isinstance(group_pages, str):
+            self.group_consecutive_pages = group_pages.lower() not in ('false', '0', 'no', 'off')
+        else:
+            self.group_consecutive_pages = bool(group_pages)
+
         # Log classification method
         if self.classification_method == self.TEXTBASED_HOLISTIC:
             logger.info("Using textbased holistic packet classification method")
@@ -1360,7 +1368,7 @@ class ClassificationService:
                 current_pages = [sorted_results[0]]
 
                 for result in sorted_results[1:]:
-                    if result.classification.doc_type == current_type:
+                    if result.classification.doc_type == current_type and self.group_consecutive_pages:
                         current_pages.append(result)
                     else:
                         # Create a new section with the current group of pages
