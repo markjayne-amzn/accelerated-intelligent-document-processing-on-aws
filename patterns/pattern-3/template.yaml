@@ -17,6 +17,17 @@ Parameters:
     AllowedValues: ['true', 'false']
     Description: Enable X-Ray tracing
 
+  BDAProjectArn:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional) ARN of an existing BDA project to use for OCR processing.
+      If not provided, documents will use BDA default profile.
+      Format: arn:${AWS::Partition}:bedrock:region:account-id:data-automation-project/project-id
+      Only used when OCR backend is set to 'bda' in configuration.
+    AllowedPattern: "^(|arn:aws[a-z-]*:bedrock:[a-z0-9-]+:[0-9]{12}:data-automation-project/.+)$"
+    ConstraintDescription: Must be empty or a valid BDA project ARN
+
   InputBucket:
     Type: String
 
@@ -156,6 +167,7 @@ Conditions:
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
   HasAppSyncApi: !Not [!Equals [!Ref AppSyncApiArn, ""]]
   IsHITLEnabled: !Equals [!Ref EnableHITL, "true"]
+  HasBDAProjectArn: !Not [!Equals [!Ref BDAProjectArn, ""]]
   IsECRImageScanningEnabled: !Equals [!Ref EnableECRImageScanning, "true"]
 
 Resources:
@@ -504,8 +516,8 @@ Resources:
                     order: 3
               backend:
                 type: string
-                description: "OCR backend to use: 'textract' for AWS Textract, 'bedrock' for LLM-based OCR, 'none' for image-only processing without OCR"
-                enum: ["textract", "bedrock", "none"]
+                description: "OCR backend to use: 'textract' for AWS Textract, 'bedrock' for LLM-based OCR, 'bda' for Bedrock Data Automation, 'none' for image-only processing without OCR"
+                enum: ["textract", "bedrock", "bda", "none"]
                 default: "textract"
                 order: 3
               model_id:
@@ -576,6 +588,29 @@ Resources:
                         type: string
                         description: "Feature - select one of the supported OCR feature types"
                         enum: ["TABLES", "FORMS", "SIGNATURES", "LAYOUT"]
+              bda:
+                type: object
+                sectionLabel: "BDA Configuration"
+                description: "Configuration for Bedrock Data Automation OCR (only used if backend is 'bda')"
+                order: 6
+                dependsOn: { field: "backend", value: "bda" }
+                properties:
+                  output_format:
+                    !If
+                      - HasBDAProjectArn
+                      - !Ref AWS::NoValue
+                      - type: string
+                        description: "Output format for BDA OCR results. MARKDOWN (default) provides best structure for downstream processing. HTML includes semantic tags. PLAIN_TEXT is unformatted. Note: Not editable when using a custom BDA project ARN (specified at deployment)."
+                        enum: ["MARKDOWN", "HTML", "PLAIN_TEXT"]
+                        default: "MARKDOWN"
+                        order: 1
+                  polling_interval:
+                    type: integer
+                    description: "Interval in seconds between status checks for BDA jobs. Lower values provide faster updates but may increase API calls."
+                    minimum: 2
+                    maximum: 30
+                    default: 5
+                    order: 2
           classes:
             order: 2
             type: array
@@ -1270,6 +1305,7 @@ Resources:
       ServiceToken: !Ref UpdateConfigurationFunctionArn
       Default: !Ref ConfigurationDefaultS3Uri
       ConfigLibraryHash: !Ref ConfigLibraryHash
+      BDAProjectArn: !Ref BDAProjectArn
 
   
   OCRFunction:
@@ -1358,6 +1394,17 @@ Resources:
               - aws-marketplace:Unsubscribe
               - aws-marketplace:ViewSubscriptions
             Resource: "*"
+          # BDA permissions for OCR
+          - Effect: Allow
+            Action:
+              - bedrock:InvokeDataAutomationAsync
+              - bedrock:GetDataAutomationStatus
+            Resource:
+              - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:data-automation-project/*"
+              - !If
+                - HasBDAProjectArn
+                - !Ref BDAProjectArn
+                - !Ref AWS::NoValue
           # AppSync permissions for updating document status (only if AppSync API is available)
           - !If
             - HasAppSyncApi

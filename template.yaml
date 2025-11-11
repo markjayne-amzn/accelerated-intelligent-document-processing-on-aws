@@ -114,6 +114,12 @@ Parameters:
 
   # Pattern 2 Parameters
 
+  Pattern2BDAProjectArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^(|^arn:aws[a-z-]*:bedrock:[a-z0-9-]+:.+:data-automation-project/.+)$"
+    Description: For Pattern-2, provide a Bedrock Data Automation (BDA) project ARN, or leave blank to create a new BDA project for OCR.
+
   Pattern2Configuration:
     Type: String
     Default: "lending-package-sample"
@@ -135,6 +141,14 @@ Parameters:
     Type: String
     Default: ""
     Description: Specify Custom Fine Tuned Extraction Model ARN. Leave blank to use pretrained model specified in the selected configuration.
+
+  # Pattern 3 Parameters
+
+  Pattern3BDAProjectArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^(|^arn:aws[a-z-]*:bedrock:[a-z0-9-]+:.+:data-automation-project/.+)$"
+    Description: For Pattern-3, provide a Bedrock Data Automation (BDA) project ARN, or leave blank to create a new BDA project for OCR.
 
   Pattern3UDOPModelArtifactPath:
     Type: String
@@ -500,11 +514,13 @@ Metadata:
           - Pattern2Configuration
           - Pattern2CustomClassificationModelARN
           - Pattern2CustomExtractionModelARN
+          - Pattern2BDAProjectArn
       - Label:
           default: "Pattern 3 Configuration"
         Parameters:
           - Pattern3Configuration
           - Pattern3UDOPModelArtifactPath
+          - Pattern3BDAProjectArn
       - Label:
           default: "Custom Configuration"
         Parameters:
@@ -572,6 +588,8 @@ Metadata:
         default: "Pattern2 - Custom Classification Model ARN"
       Pattern2CustomExtractionModelARN:
         default: "Pattern2 - Custom Extraction Model ARN"
+      Pattern2BDAProjectArn:
+        default: "Pattern2 - Bedrock Data Automation (BDA) Project ARN"
       Pattern1Configuration:
         default: "Pattern1 - Configuration Preset"
       EnableHITL:
@@ -580,6 +598,8 @@ Metadata:
         default: "Existing Private Workforce ARN"
       Pattern2Configuration:
         default: "Pattern2 - Configuration Preset"
+      Pattern3BDAProjectArn:
+        default: "Pattern3 - Bedrock Data Automation (BDA) Project ARN"
       Pattern3UDOPModelArtifactPath:
         default: "Pattern3 - UDOP Model Artifact Path"
       Pattern3Configuration:
@@ -954,6 +974,7 @@ Resources:
         BedrockGuardrailVersion: !Ref BedrockGuardrailVersion
         CustomClassificationModelARN: !Ref Pattern2CustomClassificationModelARN
         CustomExtractionModelARN: !Ref Pattern2CustomExtractionModelARN
+        BDAProjectArn: !Ref Pattern2BDAProjectArn
         UpdateConfigurationFunctionArn: !GetAtt UpdateConfigurationFunction.Arn
         AppSyncApiUrl: !GetAtt GraphQLApi.GraphQLUrl
         AppSyncApiArn: !GetAtt GraphQLApi.Arn
@@ -1015,6 +1036,7 @@ Resources:
         BedrockGuardrailId: !Ref BedrockGuardrailId
         BedrockGuardrailVersion: !Ref BedrockGuardrailVersion
         UDOPModelArtifactPath: !Ref Pattern3UDOPModelArtifactPath
+        BDAProjectArn: !Ref Pattern3BDAProjectArn
         UpdateConfigurationFunctionArn: !GetAtt UpdateConfigurationFunction.Arn
         AppSyncApiUrl: !GetAtt GraphQLApi.GraphQLUrl
         AppSyncApiArn: !GetAtt GraphQLApi.Arn

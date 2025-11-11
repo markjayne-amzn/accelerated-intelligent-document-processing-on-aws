@@ -336,11 +336,37 @@ class OCRFeature(BaseModel):
     name: str = Field(description="Feature name (e.g., LAYOUT, TABLES, FORMS)")
 
 
+class BDAConfig(BaseModel):
+    """BDA-specific configuration for OCR
+    
+    Note: BDA project ARN is specified at deploy-time via CloudFormation parameter,
+    not in runtime configuration. The Lambda receives it via BDA_PROJECT_ARN environment variable.
+    """
+
+    output_format: str = Field(
+        default="MARKDOWN",
+        description="Output format for extracted text (PLAIN_TEXT, MARKDOWN, HTML). Only used when default BDA project is used. Custom projects use their configured output format."
+    )
+    polling_interval: int = Field(
+        default=10,
+        gt=0,
+        description="Seconds between status polls during async processing"
+    )
+
+    @field_validator("polling_interval", mode="before")
+    @classmethod
+    def parse_polling_interval(cls, v: Any) -> int:
+        """Parse polling_interval from string or number"""
+        if isinstance(v, str):
+            return int(v) if v else 10
+        return int(v)
+
+
 class OCRConfig(BaseModel):
     """OCR configuration"""
 
     backend: str = Field(
-        default="textract", description="OCR backend (textract or bedrock)"
+        default="textract", description="OCR backend (textract, bedrock, bda, or none)"
     )
     model_id: Optional[str] = Field(
         default=None, description="Bedrock model ID for OCR (if backend=bedrock)"
@@ -356,6 +382,10 @@ class OCRConfig(BaseModel):
     )
     max_workers: int = Field(default=20, gt=0, description="Max concurrent workers")
     image: ImageConfig = Field(default_factory=ImageConfig)
+    bda: Optional[BDAConfig] = Field(
+        default=None,
+        description="BDA configuration (required if backend=bda)"
+    )
 
     @field_validator("max_workers", mode="before")
     @classmethod
@@ -364,6 +394,17 @@ class OCRConfig(BaseModel):
         if isinstance(v, str):
             return int(v) if v else 20
         return int(v)
+    
+    @field_validator("backend")
+    @classmethod
+    def validate_backend(cls, v: str) -> str:
+        """Validate backend is one of the supported options"""
+        valid_backends = ["textract", "bedrock", "bda", "none"]
+        if v not in valid_backends:
+            raise ValueError(
+                f"Invalid OCR backend: {v}. Must be one of {valid_backends}"
+            )
+        return v
 
 
 class ErrorAnalyzerParameters(BaseModel):
