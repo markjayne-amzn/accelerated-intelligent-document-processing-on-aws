@@ -226,10 +226,24 @@ class OcrService:
             )
 
         # Validate backend
-        if self.backend not in ["textract", "bedrock", "none"]:
+        if self.backend not in ["textract", "bedrock", "bda", "none"]:
             raise ValueError(
-                f"Invalid backend: {backend}. Must be 'textract', 'bedrock', or 'none'"
+                f"Invalid backend: {backend}. Must be 'textract', 'bedrock', 'bda', or 'none'"
             )
+
+        # Validate BDA configuration if backend is bda
+        if self.backend == "bda":
+            if not hasattr(self, "config") or not self.config.ocr.bda:
+                raise ValueError(
+                    "BDA backend selected but no BDA configuration provided. "
+                    "Please provide bda configuration in config.ocr.bda"
+                )
+            self.bda_config = self.config.ocr.bda
+            logger.info(
+                f"OCR Service initialized with BDA backend, output format: {self.bda_config.output_format}"
+            )
+        else:
+            self.bda_config = None
 
         # Initialize clients based on backend
         if self.backend == "textract":
@@ -337,6 +351,11 @@ class OcrService:
             document.errors.append(f"{error_msg} (see logs for full trace)")
             document.status = Status.FAILED
             return document
+
+        # Handle BDA backend separately - it processes entire documents, not page-by-page
+        if self.backend == "bda":
+            logger.info("Processing document with BDA backend")
+            return self._process_document_bda(document)
 
         # Detect file type and process accordingly
         try:
@@ -1622,6 +1641,372 @@ class OcrService:
                 logger.info(f"Successfully extracted basic text{page_info}")
 
         return {"text": text}
+
+    def _process_document_bda(self, document: Document) -> Document:
+        """
+        Process entire document using BDA backend.
+
+        BDA processes complete documents (not page-by-page) and returns structured output.
+        This method handles async invocation, polling, and transformation of results.
+
+        Args:
+            document: Document model object to update with BDA OCR results
+
+        Returns:
+            Updated Document object with BDA results
+        """
+        from idp_common.bda.bda_service import BdaService
+
+        t0 = time.time()
+
+        try:
+            # Build S3 URIs for BDA processing
+            input_s3_uri = f"s3://{document.input_bucket}/{document.input_key}"
+            output_s3_uri = f"s3://{document.output_bucket}/{document.input_key}"
+
+            # Check for custom BDA project ARN from environment variable (deploy-time config)
+            custom_project_arn = os.environ.get("BDA_PROJECT_ARN", "").strip()
+
+            # Initialize BDA service
+            bda_service = BdaService(
+                output_s3_uri=output_s3_uri,
+                dataAutomationProjectArn=custom_project_arn
+                if custom_project_arn
+                else None,
+            )
+
+            logger.info(f"Starting BDA processing for {input_s3_uri}")
+            if custom_project_arn:
+                logger.info(
+                    f"Using custom BDA project from environment: {custom_project_arn}"
+                )
+            else:
+                logger.info("Using default BDA project (no custom project specified)")
+
+            # Invoke BDA async (no blueprint ARN - using standard output via project config)
+            response = bda_service.invoke_data_automation_async(
+                input_s3_uri=input_s3_uri,
+                blueprintArn=None,  # Standard output uses project config, not blueprints
+            )
+
+            invocation_arn = response["invocationArn"]
+            logger.info(f"BDA job started with invocation ARN: {invocation_arn}")
+
+            t1 = time.time()
+            logger.info(f"BDA invocation took {t1 - t0:.2f} seconds")
+
+            # Poll for completion
+            status_response = self._poll_bda_status(invocation_arn)
+
+            t2 = time.time()
+            logger.info(f"BDA polling completed in {t2 - t1:.2f} seconds")
+
+            # Check if BDA processing succeeded
+            if status_response["status"] != "Success":
+                error_type = status_response.get("errorType", "Unknown")
+                error_msg = status_response.get(
+                    "errorMessage", "No error message provided"
+                )
+                raise Exception(f"BDA processing failed: {error_type} - {error_msg}")
+
+            # Extract output S3 URI
+            output_location = status_response["outputConfiguration"]["s3Uri"]
+            logger.info(f"BDA output location: {output_location}")
+
+            # Transform BDA results to Page objects
+            document = self._transform_bda_results(output_location, document)
+
+            t3 = time.time()
+            logger.info(f"BDA transformation took {t3 - t2:.2f} seconds")
+            logger.info(f"Total BDA processing time: {t3 - t0:.2f} seconds")
+            logger.info(f"Processed {len(document.pages)} pages with BDA")
+
+        except Exception as e:
+            import traceback
+
+            error_msg = f"Error in BDA processing: {str(e)}"
+            stack_trace = traceback.format_exc()
+            logger.error(f"{error_msg}\nStack trace:\n{stack_trace}")
+            document.errors.append(f"{error_msg} (see logs for full trace)")
+            document.status = Status.FAILED
+
+        return document
+
+    def _poll_bda_status(self, invocation_arn: str) -> Dict[str, Any]:
+        """
+        Poll BDA job status until completion with timeout protection.
+
+        Args:
+            invocation_arn: ARN of the BDA invocation to poll
+
+        Returns:
+            Final status response from BDA
+
+        Raises:
+            TimeoutError: If polling exceeds Lambda timeout limit
+        """
+        import boto3
+
+        bda_client = boto3.client(
+            "bedrock-data-automation-runtime", region_name=self.region
+        )
+
+        polling_interval = self.bda_config.polling_interval
+        max_wait_time = (
+            870  # 14.5 minutes - leave 30s buffer before Lambda 15-min timeout
+        )
+        elapsed_time = 0
+
+        logger.info(
+            f"Polling BDA status every {polling_interval} seconds (max wait: {max_wait_time}s)"
+        )
+
+        while elapsed_time < max_wait_time:
+            # Get current status
+            status_response = bda_client.get_data_automation_status(
+                invocationArn=invocation_arn
+            )
+
+            status = status_response["status"]
+            logger.debug(f"BDA status: {status} (elapsed: {elapsed_time}s)")
+
+            # Check for terminal states
+            if status in ["Success", "ServiceError", "ClientError"]:
+                logger.info(f"BDA processing completed with status: {status}")
+                return status_response
+
+            # Wait before next poll
+            time.sleep(polling_interval)
+            elapsed_time += polling_interval
+
+        # Timeout reached
+        raise TimeoutError(
+            f"BDA processing exceeded maximum wait time of {max_wait_time} seconds. "
+            f"Consider increasing polling_interval or checking document size."
+        )
+
+    def _transform_bda_results(
+        self, bda_output_s3_uri: str, document: Document
+    ) -> Document:
+        """
+        Transform BDA S3 output to standard Page objects compatible with IDP pipeline.
+
+        BDA output structure:
+        - job_metadata.json contains metadata and pointers to segment result files
+        - Each segment has a result.json with page-level data in a "pages" array
+        - Text is in page["representation"]["html"] format
+
+        Args:
+            bda_output_s3_uri: S3 URI where BDA stored job_metadata.json
+            document: Document object to populate with pages
+
+        Returns:
+            Updated Document object with populated pages
+        """
+        import json
+
+        # Parse S3 URI
+        if not bda_output_s3_uri.startswith("s3://"):
+            raise ValueError(f"Invalid S3 URI: {bda_output_s3_uri}")
+
+        uri_parts = bda_output_s3_uri[5:].split("/", 1)
+        bucket = uri_parts[0]
+        key = uri_parts[1] if len(uri_parts) > 1 else ""
+
+        logger.info(f"Reading BDA job metadata from s3://{bucket}/{key}")
+
+        # Read job metadata JSON from S3
+        try:
+            response = self.s3_client.get_object(Bucket=bucket, Key=key)
+            job_metadata = json.loads(response["Body"].read())
+        except Exception as e:
+            raise Exception(f"Failed to read BDA job metadata from S3: {str(e)}")
+
+        # Extract result file paths from metadata
+        if "output_metadata" not in job_metadata:
+            raise ValueError("BDA job metadata missing 'output_metadata' field")
+
+        all_pages = []
+
+        # Process each asset (typically one per document)
+        for asset in job_metadata["output_metadata"]:
+            if "segment_metadata" not in asset:
+                continue
+
+            # Process each segment (page-level granularity means one segment per page or group)
+            for segment in asset["segment_metadata"]:
+                if "standard_output_path" not in segment:
+                    continue
+
+                result_s3_uri = segment["standard_output_path"]
+                logger.info(f"Reading BDA segment result from {result_s3_uri}")
+
+                # Parse result S3 URI
+                if not result_s3_uri.startswith("s3://"):
+                    logger.warning(f"Invalid result S3 URI: {result_s3_uri}")
+                    continue
+
+                result_uri_parts = result_s3_uri[5:].split("/", 1)
+                result_bucket = result_uri_parts[0]
+                result_key = result_uri_parts[1] if len(result_uri_parts) > 1 else ""
+
+                # Read segment result JSON
+                try:
+                    result_response = self.s3_client.get_object(
+                        Bucket=result_bucket, Key=result_key
+                    )
+                    segment_result = json.loads(result_response["Body"].read())
+                except Exception as e:
+                    logger.error(f"Failed to read segment result: {str(e)}")
+                    continue
+
+                # Extract pages from segment result
+                if "pages" in segment_result:
+                    all_pages.extend(segment_result["pages"])
+
+        if not all_pages:
+            raise ValueError("No pages found in BDA output segments")
+
+        num_pages = len(all_pages)
+        document.num_pages = num_pages
+
+        logger.info(f"Processing {num_pages} pages from BDA output")
+
+        # Map BDA output format enum values to exact representation field names
+        # Based on AWS Bedrock Data Automation API documentation
+        FORMAT_TO_FIELD = {"MARKDOWN": "markdown", "HTML": "html", "PLAIN_TEXT": "text"}
+
+        # Get the configured output format
+        output_format = self.bda_config.output_format
+        field_name = FORMAT_TO_FIELD.get(output_format)
+
+        if field_name is None:
+            raise ValueError(
+                f"Unknown BDA output format: {output_format}. "
+                f"Valid formats are: {list(FORMAT_TO_FIELD.keys())}"
+            )
+
+        logger.info(f"Using BDA output format: {output_format} (field: '{field_name}')")
+
+        # Process each page from BDA
+        for page_data in all_pages:
+            # BDA provides page_index in the page data
+            page_index = page_data.get("page_index", 0)
+            page_id = str(page_index + 1)
+
+            try:
+                # Extract text from format-specific representation field
+                representation = page_data.get("representation", {})
+                extracted_text = representation.get(field_name, "")
+
+                # Log warning if field is missing (helps debug configuration issues)
+                if not extracted_text:
+                    available_fields = list(representation.keys())
+                    logger.warning(
+                        f"Page {page_id}: No text found in '{field_name}' field. "
+                        f"Configured format: {output_format}. "
+                        f"Available representation fields: {available_fields}"
+                    )
+                else:
+                    logger.debug(
+                        f"Extracted {len(extracted_text)} characters from BDA page {page_id}"
+                    )
+
+                # Store BDA raw response for this page
+                raw_text_key = f"{document.input_key}/pages/{page_id}/rawText.json"
+                s3.write_content(
+                    page_data,
+                    document.output_bucket,
+                    raw_text_key,
+                    content_type="application/json",
+                )
+
+                # Store parsed text result
+                parsed_result = {"text": extracted_text}
+                parsed_text_key = f"{document.input_key}/pages/{page_id}/result.json"
+                s3.write_content(
+                    parsed_result,
+                    document.output_bucket,
+                    parsed_text_key,
+                    content_type="application/json",
+                )
+
+                # BDA doesn't provide confidence data at this granularity level
+                text_confidence_data = {
+                    "text": "| Text | Confidence |\n|:-----|:------------|\n| *No confidence data available from BDA* | N/A |"
+                }
+
+                text_confidence_key = (
+                    f"{document.input_key}/pages/{page_id}/textConfidence.json"
+                )
+                s3.write_content(
+                    text_confidence_data,
+                    document.output_bucket,
+                    text_confidence_key,
+                    content_type="application/json",
+                )
+
+                # Handle page image - BDA may provide image URI or we generate placeholder
+                if "imageUri" in page_data:
+                    # BDA provided image URI
+                    image_uri = page_data["imageUri"]
+                else:
+                    # Generate placeholder image key (BDA doesn't extract images by default)
+                    image_key = f"{document.input_key}/pages/{page_id}/image.jpg"
+                    image_uri = f"s3://{document.output_bucket}/{image_key}"
+                    logger.debug(
+                        f"No image URI from BDA, using placeholder: {image_uri}"
+                    )
+
+                # Create Page object
+                document.pages[page_id] = Page(
+                    page_id=page_id,
+                    image_uri=image_uri,
+                    raw_text_uri=f"s3://{document.output_bucket}/{raw_text_key}",
+                    parsed_text_uri=f"s3://{document.output_bucket}/{parsed_text_key}",
+                    text_confidence_uri=f"s3://{document.output_bucket}/{text_confidence_key}",
+                )
+
+                logger.debug(f"Processed BDA page {page_id}")
+
+            except Exception as e:
+                import traceback
+
+                error_msg = f"Error processing BDA page {page_id}: {str(e)}"
+                stack_trace = traceback.format_exc()
+                logger.error(f"{error_msg}\nStack trace:\n{stack_trace}")
+                document.errors.append(f"{error_msg} (see logs for full trace)")
+
+        # Add BDA metering data
+        document.metering = {"OCR/bda/invoke_data_automation": {"pages": num_pages}}
+
+        logger.info(f"Successfully transformed {num_pages} pages from BDA output")
+
+        return document
+
+    def _generate_bda_confidence_data(
+        self, bounding_boxes: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Generate text confidence data from BDA bounding boxes.
+
+        Args:
+            bounding_boxes: List of bounding box dictionaries from BDA output
+
+        Returns:
+            Dictionary with markdown table of text and confidence scores
+        """
+        # Start building the markdown table
+        markdown_lines = ["| Text | Confidence |", "|:-----|:-----------|"]
+
+        for bbox in bounding_boxes:
+            if "text" in bbox and "confidence" in bbox:
+                text = bbox["text"].replace("|", "\\|")  # Escape pipe characters
+                confidence = round(bbox["confidence"], 1)
+                markdown_lines.append(f"| {text} | {confidence} |")
+
+        markdown_table = "\n".join(markdown_lines)
+        return {"text": markdown_table}
 
     def _detect_file_type(self, filename: str, content: bytes) -> str:
         """

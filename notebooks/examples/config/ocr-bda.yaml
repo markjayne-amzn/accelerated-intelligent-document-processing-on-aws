@@ -1,0 +1,20 @@
+# BDA OCR Service Configuration
+# Note: BDA project ARN is specified at deploy-time via CloudFormation parameter,
+# not in this runtime configuration. Pass it via --bda-project-arn argument.
+
+ocr:
+  backend: "bda"
+  
+  bda:
+    # Output format for extracted text (only used when default BDA project is used)
+    # Custom BDA projects use their configured output format
+    output_format: "MARKDOWN"  # Options: MARKDOWN, HTML, PLAIN_TEXT
+    
+    # Polling interval for checking job status
+    polling_interval: 5  # seconds
+  
+  # Image Processing Configuration (inherited from Textract settings)
+  image:
+    dpi: 150
+    target_width: 951
+    target_height: 1268
