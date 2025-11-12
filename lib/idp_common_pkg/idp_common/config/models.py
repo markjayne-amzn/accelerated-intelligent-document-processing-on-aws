@@ -349,8 +349,9 @@ class BDAConfig(BaseModel):
     )
     polling_interval: int = Field(
         default=10,
-        gt=0,
-        description="Seconds between status polls during async processing"
+        ge=2,
+        le=30,
+        description="Interval in seconds between status checks for BDA jobs. Lower values provide faster updates but may increase API calls."
     )
 
     @field_validator("polling_interval", mode="before")

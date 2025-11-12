@@ -251,6 +251,40 @@ Output Files:
 - [x] Remove enable_splitting toggle (dead code)
 - [x] Make output_format conditional via CloudFormation !If
 
+#### Phase 2.5: BDA Configuration Validation Fix ✅ COMPLETED (Nov 11, 2025)
+**Problem**: UI broke with "Configuration validation failed" after updating BDA polling_interval
+- Root cause: `BDAOutputFormat` enum serialized as `"BDAOutputFormat.MARKDOWN"` instead of `"MARKDOWN"`
+- This broke Pydantic validation which expected plain string values
+
+**Solution Implemented**:
+1. **Immediate Fix**: Manually corrected DynamoDB Custom config value
+2. **Root Cause Fix**: Removed `BDAOutputFormat` enum entirely to match existing pattern
+   - Changed `output_format: BDAOutputFormat` → `output_format: str` 
+   - Removed `from enum import Enum` import (not needed for config)
+   - Fixed `.value` references in `ocr/service.py`
+   - All other config dropdowns (backend, model, etc.) use plain `str`, not Enum
+   - CloudFormation schema provides `enum: [...]` array for UI validation
+3. **Default Value Alignment**: Updated default from 5 to 10 seconds (matches user expectation)
+   - `lib/idp_common_pkg/idp_common/config/models.py`: `default=10`
+   - `patterns/pattern-2/template.yaml`: `default: 10`
+   - `patterns/pattern-3/template.yaml`: `default: 10`
+4. **Added Validation Constraints**: `ge=2, le=30` (min 2 seconds, max 30 seconds)
+
+**Key Pattern Established**:
+- ✅ Config dropdowns use plain `str` in Python
+- ✅ CloudFormation schema has `enum: [...]` for UI validation  
+- ✅ Pydantic Field() has `ge`/`le` for runtime validation
+- ❌ NO Python Enum classes for config fields
+
+**Known Issue - Future Enhancement (Not Priority)**:
+- **"Restore default" shows empty for polling_interval**
+  - Root cause: Default config loaded from `lending-package-sample` which has `backend: "textract"` (no BDA config)
+  - Pydantic's `Optional[BDAConfig] = None` results in `bda: NULL` in DynamoDB Default
+  - When user clicks "Restore default" for BDA field, UI copies NULL → field appears empty
+  - **Potential Fix**: Add BDA block to all config library samples with proper defaults (even when backend != "bda")
+  - **Current Workaround**: Users see empty field, save anyway, Pydantic applies default (10 seconds)
+  - Not a blocker: Field works correctly after save, just displays empty on restore
+
 **Changes Applied:**
 ```yaml
 # Before (incorrect - all fields visible at runtime)

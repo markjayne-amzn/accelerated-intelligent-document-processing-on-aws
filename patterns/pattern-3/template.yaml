@@ -609,7 +609,7 @@ Resources:
                     description: "Interval in seconds between status checks for BDA jobs. Lower values provide faster updates but may increase API calls."
                     minimum: 2
                     maximum: 30
-                    default: 5
+                    default: 10
                     order: 2
           classes:
             order: 2
@@ -1345,8 +1345,9 @@ Resources:
           LOG_LEVEL: !Ref LogLevel
           APPSYNC_API_URL: !Ref AppSyncApiUrl
           TRACKING_TABLE: !Ref TrackingTable
-          DOCUMENT_TRACKING_MODE: !If [HasAppSyncApi, 'appsync', 'dynamodb']
+          DOCUMENT_TRACKING_MODE: !If [HasAppSyncApi, "appsync", "dynamodb"]
           WORKING_BUCKET: !Ref WorkingBucket
+          BDA_PROJECT_ARN: !If [HasBDAProjectArn, !Ref BDAProjectArn, ""]
       LoggingConfig:
         LogGroup: !Ref OCRFunctionLogGroup
       Policies:
@@ -1401,6 +1402,8 @@ Resources:
               - bedrock:GetDataAutomationStatus
             Resource:
               - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:data-automation-project/*"
+              - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:data-automation-invocation/*"
+              - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:data-automation-profile/*.data-automation-v1"
               - !If
                 - HasBDAProjectArn
                 - !Ref BDAProjectArn
