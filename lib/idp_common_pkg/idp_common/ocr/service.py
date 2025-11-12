@@ -1872,6 +1872,28 @@ class OcrService:
 
         logger.info(f"Processing {num_pages} pages from BDA output")
 
+        # Download original PDF to extract page images (same as Textract backend does)
+        # This ensures BDA output format matches Textract output format exactly
+        logger.info(
+            f"Downloading original PDF from s3://{document.input_bucket}/{document.input_key}"
+        )
+        try:
+            pdf_response = self.s3_client.get_object(
+                Bucket=document.input_bucket, Key=document.input_key
+            )
+            pdf_content = pdf_response["Body"].read()
+            pdf_document = fitz.open(stream=pdf_content, filetype="pdf")
+            logger.info(f"Opened PDF with {len(pdf_document)} pages")
+        except Exception as e:
+            import traceback
+
+            error_msg = f"Error opening PDF for image extraction: {str(e)}"
+            stack_trace = traceback.format_exc()
+            logger.error(f"{error_msg}\nStack trace:\n{stack_trace}")
+            document.errors.append(f"{error_msg} (see logs for full trace)")
+            # Continue without images - use placeholder URIs
+            pdf_document = None
+
         # Map BDA output format enum values to exact representation field names
         # Based on AWS Bedrock Data Automation API documentation
         FORMAT_TO_FIELD = {"MARKDOWN": "markdown", "HTML": "html", "PLAIN_TEXT": "text"}
@@ -1946,16 +1968,49 @@ class OcrService:
                     content_type="application/json",
                 )
 
-                # Handle page image - BDA may provide image URI or we generate placeholder
-                if "imageUri" in page_data:
-                    # BDA provided image URI
-                    image_uri = page_data["imageUri"]
+                # Extract and upload page image (same as Textract backend)
+                # This ensures downstream processes (extraction) can access page images
+                if pdf_document is not None:
+                    try:
+                        # Use the SAME method as Textract to extract page images
+                        page = pdf_document.load_page(page_index)
+                        img_bytes = self._extract_page_image(
+                            page, pdf_document.is_pdf, page_id
+                        )
+
+                        # Upload to S3 at the SAME location as Textract
+                        image_key = f"{document.input_key}/pages/{page_id}/image.jpg"
+                        s3.write_content(
+                            img_bytes,
+                            document.output_bucket,
+                            image_key,
+                            content_type="image/jpeg",
+                        )
+                        image_uri = f"s3://{document.output_bucket}/{image_key}"
+                        logger.debug(
+                            f"Extracted and uploaded page image for page {page_id}"
+                        )
+
+                    except Exception as e:
+                        import traceback
+
+                        error_msg = (
+                            f"Error extracting image for page {page_id}: {str(e)}"
+                        )
+                        stack_trace = traceback.format_exc()
+                        logger.error(f"{error_msg}\nStack trace:\n{stack_trace}")
+                        # Use placeholder if image extraction fails
+                        image_key = f"{document.input_key}/pages/{page_id}/image.jpg"
+                        image_uri = f"s3://{document.output_bucket}/{image_key}"
+                        logger.warning(
+                            f"Using placeholder URI due to extraction error: {image_uri}"
+                        )
                 else:
-                    # Generate placeholder image key (BDA doesn't extract images by default)
+                    # PDF couldn't be opened - use placeholder
                     image_key = f"{document.input_key}/pages/{page_id}/image.jpg"
                     image_uri = f"s3://{document.output_bucket}/{image_key}"
-                    logger.debug(
-                        f"No image URI from BDA, using placeholder: {image_uri}"
+                    logger.warning(
+                        f"PDF not available, using placeholder URI: {image_uri}"
                     )
 
                 # Create Page object
@@ -1976,6 +2031,11 @@ class OcrService:
                 stack_trace = traceback.format_exc()
                 logger.error(f"{error_msg}\nStack trace:\n{stack_trace}")
                 document.errors.append(f"{error_msg} (see logs for full trace)")
+
+        # Clean up PDF document
+        if pdf_document is not None:
+            pdf_document.close()
+            logger.debug("Closed PDF document")
 
         # Add BDA metering data
         document.metering = {"OCR/bda/invoke_data_automation": {"pages": num_pages}}
